@@ -29,6 +29,9 @@ This runs the whole stack locally on wrangler and workerd. This is not meant for
 
 Alternatively, you can [deploy to your Cloudflare account](https://os.cloudflare.app/deploy).
 
+For personal self-hosted installations, connect **Sign in with ChatGPT** from **AI Providers** to
+use eligible models with your ChatGPT plan. See the [connection guide](docs/chatgpt-plan.md).
+
 (More options at the end of this readme.)
 
 ### What to try

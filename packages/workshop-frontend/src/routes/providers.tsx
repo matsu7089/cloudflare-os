@@ -15,6 +15,7 @@ import {
 import AddModelModal, { type ModelModalMode } from '../AddModelModal'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
+import { ChatGptPlanPanel } from '../features/ai-models/ChatGptPlanPanel'
 
 export const Route = createFileRoute('/providers')({ component: ProvidersPage })
 
@@ -78,6 +79,9 @@ function ModelRow({
               built-in
             </span>
           )}
+          {model.id.startsWith('chatgpt/') && (
+            <span className="text-xs text-kumo-subtle">Using ChatGPT plan</span>
+          )}
           {isQuick && (
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[rgba(255,72,1,0.10)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.4px] text-kumo-brand">
               <Lightning size={9} weight="fill" />
@@ -122,7 +126,7 @@ function ModelRow({
                 </DropdownMenu.Item>
               </>
             )}
-            {!isBuiltIn && (
+            {!isBuiltIn && !model.id.startsWith('chatgpt/') && (
               <DropdownMenu.Item variant="danger" onClick={onDelete} className={MENU_ITEM_DANGER}>
                 <Trash size={13} className="mr-2" />
                 Delete provider
@@ -302,6 +306,8 @@ function ProvidersPage() {
       )}
 
       <div className="chat-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-1 pb-16">
+        {aiConfig && <ChatGptPlanPanel authenticatedApi={authenticatedApi}
+          canConnect={canAddModels} onModelsChanged={fetchAll} />}
         {/* Notices */}
         {(gatewayMode || (!gatewayMode && hasChatModel)) && !loading && !loadError && (
           <div className="flex flex-col gap-2.5 px-3 pb-2">
@@ -382,7 +388,7 @@ function ProvidersPage() {
                 model={model}
                 isQuick={quickModel === model.id}
                 isBuiltIn={isBuiltIn(model.id)}
-                canEdit={canAddModels}
+                canEdit={canAddModels && !model.id.startsWith('chatgpt/')}
                 onEdit={() => openWithSource('edit', model)}
                 onClone={() => openWithSource('clone', model)}
                 onDelete={() => handleDelete(model)}

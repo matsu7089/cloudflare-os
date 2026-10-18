@@ -32,6 +32,7 @@ export const ComposerModelSelector = ({
             type="button"
             className="group inline-flex h-10 min-w-0 max-w-[110px] cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[14px] leading-5 text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default focus-visible:bg-kumo-tint focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.97] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default sm:h-8 sm:max-w-[180px] sm:text-[13px]"
             aria-label="Select model"
+            title={selectedModel?.id.startsWith('chatgpt/') ? 'Using ChatGPT plan' : undefined}
           >
             <span className="min-w-0 truncate">{selectedModelLabel}</span>
             <CaretDown
@@ -43,6 +44,13 @@ export const ComposerModelSelector = ({
         }
       />
       <DropdownMenu.Content className="themed-floating-shadow-lg !z-[1100] !min-w-[190px] rounded-2xl border border-kumo-line/70 bg-kumo-base p-1">
+        {selectedModel?.id.startsWith('chatgpt/') && (
+          <div className="px-2 py-2 text-xs text-kumo-subtle">
+            <p>Using ChatGPT plan</p>
+            <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer"
+              className="text-kumo-link underline">Manage usage</a>
+          </div>
+        )}
         {models.map((model) => {
           const active = selectedModel?.id === model.id;
           return (
