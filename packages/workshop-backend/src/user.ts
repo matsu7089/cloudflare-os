@@ -21,6 +21,7 @@ import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./a
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
 import { deliver, registerDevice } from "./notification-service.js";
+import { ChatGptAccounts } from "./chatgpt-plan.js";
 import {
   DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
   type DeviceSessionCredential, type DeviceSessionHandoff,
@@ -201,6 +202,7 @@ async function checkGatekeeperVendorFilter(
 /** Durable Object that stores information about a user. */
 export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private storage: UserStorage;
+  #chatGpt: ChatGptAccounts;
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
   #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
@@ -209,6 +211,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     super(ctx, env);
 
     this.storage = makeUserStorage(ctx.storage);
+    this.#chatGpt = new ChatGptAccounts(this.storage, ctx.id.toString());
     this.adminSettings = this.ctx.exports.AdminSettings;
 
     this.vendors = buildGatekeeperVendorMap(env);
@@ -654,6 +657,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // Also include user-configured models, where users may add their own, skipping any that a
     // gateway model shadows, whatever its mode (see #resolveModel()).
     if (models && !models.userModels) return result;
+    if (kind === "language") {
+      result.push(...this.#chatGpt.models().filter(model => !models?.get(model.profile.id))
+          .map(model => model.profile));
+    }
     for (let model of this.storage.aiModels.list()) {
       if (!models?.get(model.profile.id) &&
           modelKind(model.config.provider, model.config.model) === kind) {
@@ -661,6 +668,41 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
     return result;
+  }
+
+  async listChatGptAccounts() {
+    return this.#chatGpt.list();
+  }
+
+  async beginChatGptConnect(accountId?: string) {
+    (await getGatewayModels(this.env))?.refuseUserModel();
+    if (!this.env.PUBLIC_BASE_URL) throw new Error("Configure PUBLIC_BASE_URL before connecting ChatGPT.");
+    return this.#chatGpt.begin(this.env.PUBLIC_BASE_URL, accountId);
+  }
+
+  async authorizeChatGptConnect(ticket: string, port: number): Promise<string> {
+    (await getGatewayModels(this.env))?.refuseUserModel();
+    return this.#chatGpt.authorize(ticket, port);
+  }
+
+  async completeChatGptConnect(ticket: string, callback: string): Promise<void> {
+    (await getGatewayModels(this.env))?.refuseUserModel();
+    return this.#chatGpt.complete(ticket, callback);
+  }
+
+  /** Backend-only token access, resolved again before every ChatGPT HTTP request. */
+  async getChatGptAccessToken(accountId: string): Promise<string> {
+    (await getGatewayModels(this.env))?.refuseUserModel();
+    return this.#chatGpt.accessToken(accountId);
+  }
+
+  async refreshChatGptModels(accountId: string): Promise<void> {
+    (await getGatewayModels(this.env))?.refuseUserModel();
+    return this.#chatGpt.refreshModels(accountId);
+  }
+
+  async disconnectChatGptAccount(accountId: string): Promise<{ revoked: boolean }> {
+    return this.#chatGpt.disconnect(accountId);
   }
 
   async addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
@@ -672,7 +714,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       source = this.#getHandAddedModel(copySecretsFrom, models).config;
     }
     // A gateway model, whatever its mode, would shadow the new model and leave it unreachable.
-    if (this.storage.aiModels.get(profile.id) || models?.get(profile.id)) {
+    if (profile.id.startsWith("chatgpt/") || this.storage.aiModels.get(profile.id) || models?.get(profile.id)) {
       throw new Error(`A model with ID "${profile.id}" already exists.`);
     }
     this.#putModel(profile, resolveWithheldSecrets(config, source), models);
@@ -715,13 +757,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     // capnweb-validate lets through properties that RedactedAiModelConfig omits, and these are a
     // deployment's to set on its own models.
-    let {reasoning, compactionInputBudget, behavesLike, capabilities, ...own} = config;
+    let {reasoning, compactionInputBudget, behavesLike, capabilities, chatGptPlan, ...own} = config;
 
     profile.type = "agent";
     this.storage.aiModels.put({profile, config: own});
   }
 
   async deleteModel(id: string): Promise<void> {
+    if (this.#chatGpt.resolve(id)) throw new Error("Manage ChatGPT models through the connected account.");
     // In AI Gateway mode, don't allow deleting the gateway's own models, whatever their mode.
     let model = (await getGatewayModels(this.env))?.get(id);
     if (model) throw new Error(`Cannot delete built-in model "${model.name}".`);
@@ -735,7 +778,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async getQuickModel(): Promise<null | string> {
     let result = this.storage.quickModel.get();
-    if (result && this.storage.aiModels.get(result)) {
+    if (result && this.#resolveModel(result, await getGatewayModels(this.env))) {
       return result;
     } else {
       return null;
@@ -876,7 +919,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     } else {
       let quickModelId = this.storage.quickModel.get();
       if (quickModelId) {
-        let quickModel = this.storage.aiModels.get(quickModelId);
+        let quickModel = this.#resolveModel(quickModelId, models);
         if (quickModel) {
           result.quickModel = quickModel.config;
         }
@@ -907,7 +950,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   #resolveModel(id: string, models: GatewayModels | null): UserAiModelRecord | undefined {
     if (models?.get(id)) return models.resolve(id);
-    return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
+    if (models && !models.userModels) return undefined;
+    return this.#chatGpt.resolve(id) ?? this.storage.aiModels.get(id);
   }
 
   async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {

@@ -539,6 +539,18 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   listModels(kind?: ModelKind): Promise<AiChatAuthorInfo[]>;
 
+  /** List ChatGPT registrations and their account-specific model catalogs, without credentials. */
+  listChatGptAccounts(): Promise<ChatGptAccount[]>;
+
+  /** Start a ten-minute, single-use local-browser sign-in, optionally reauthorizing an account. */
+  beginChatGptConnect(accountId?: string): Promise<{ connectUrl: string }>;
+
+  /** Refresh the selected ChatGPT account's available models. */
+  refreshChatGptModels(accountId: string): Promise<void>;
+
+  /** Stop using an account and revoke its renewable session; report whether revocation succeeded. */
+  disconnectChatGptAccount(accountId: string): Promise<{ revoked: boolean }>;
+
   /**
    * Adds a new model to the user's configured set. The ID must not name a model the user already
    * added; use `updateModel()` to replace one.
@@ -1792,6 +1804,9 @@ export type AiModelConfig = {
    */
   apiToken: string;
 
+  /** Internal reference to a user's ChatGPT grant. Only the backend may mint this routing. */
+  chatGptPlan?: { userId: string; accountId: string };
+
   /**
    * Cloudflare account ID owning the Workers AI deployment the token authorizes. Required for
    * provider "cloudflare" (whose REST endpoint is account-scoped); unused for other providers.
@@ -1860,12 +1875,28 @@ export type AiModelConfig = {
  */
 export type RedactedAiModelConfig = Omit<AiModelConfig,
     "apiToken" | "extraHeaders" | "reasoning" | "compactionInputBudget" | "behavesLike" |
-    "capabilities"> & {
+    "capabilities" | "chatGptPlan"> & {
   /** `AiModelConfig.apiToken`, or null if withheld. */
   apiToken: string | null;
 
   /** `AiModelConfig.extraHeaders`, with each value null if withheld. */
   extraHeaders?: Record<string, string | null>;
+};
+
+/** A connected ChatGPT registration. Two registrations may have the same email. */
+export type ChatGptAccount = {
+  /** Local registration identifier, distinct from the OAuth client ID. */
+  id: string;
+  /** Label from the verified OpenAI identity. */
+  label: string;
+  /** Whether the granted scopes permit ChatGPT plan inference. */
+  planEnabled: boolean;
+  /** Whether this session needs a fresh sign-in. */
+  needsReauthentication: boolean;
+  /** Time of the latest validated sign-in, in Unix milliseconds. */
+  connectedAt: number;
+  /** Models the account's catalog permits the user to select, in server order. */
+  models: { id: string; name: string }[];
 };
 
 /**

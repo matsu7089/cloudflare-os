@@ -6,6 +6,7 @@ import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
 import type { UserAiModelRecord } from "../src/storage-schema/user-storage.js";
 import type { UserDurableObject } from "../src/user.js";
+import { makeUserStorage } from "../src/storage-schema/user-storage.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -42,6 +43,13 @@ async function userWithModel() {
 }
 
 describe("UserDurableObject model editing", () => {
+  it("cannot mint internal ChatGPT routing by passing extra properties in a hand-added model", async () => {
+    const { user, stored } = await userWithModel();
+    await user.updateModel(PROFILE, {
+      ...CONFIG, chatGptPlan: { userId: "other-user", accountId: "other-account" },
+    } as AiModelConfig);
+    expect(await stored(PROFILE.id)).toEqual({ profile: PROFILE, config: CONFIG });
+  });
   it("replaces secrets that are supplied, and drops headers that are omitted", async () => {
     const { user, stored } = await userWithModel();
     await user.updateModel(PROFILE, {
@@ -147,6 +155,33 @@ describe("UserDurableObject model editing", () => {
       expect((await user.getExternalMessageChatContext(null)).aiModel?.profile).toEqual(PROFILE);
       await user.deleteModel(PROFILE.id);
       expect(await user.listModels()).toEqual([]);
+    });
+  });
+});
+
+describe("UserDurableObject ChatGPT models", () => {
+  it("resolves account catalogs for chats and quick tasks without exposing tokens through model editing", async () => {
+    const stub = env.TEST_USER.getByName(`chatgpt-models-${++userCounter}`);
+    await runInDurableObject(stub, async (user, state) => {
+      makeUserStorage(state.storage).chatGptAccounts.put({ account: {
+        id: "account", clientId: "oaiapp_test", subject: "subject", label: "user@example.test",
+        accessToken: "secret-access", refreshToken: "secret-refresh", idToken: "secret-id",
+        scopes: ["chatgpt.tokens.use.direct"], expiresAt: Date.now() + 3600_000,
+        connectedAt: Date.now(), needsReauthentication: false,
+        models: [{ id: "gpt-test", name: "GPT Test" }],
+      } });
+      const [model] = await user.listModels();
+      expect(model.id).toBe("chatgpt/account/gpt-test");
+      expect(model.name).toContain("user@example.test");
+      const chat = await user.getChatContext(model.id);
+      expect(chat.aiModel?.config).toEqual({ provider: "openai", model: "gpt-test", apiToken: "",
+        chatGptPlan: { userId: state.id.toString(), accountId: "account" } });
+      expect(JSON.stringify(chat)).not.toContain("secret-");
+      await user.setQuickModel(model.id);
+      expect(await user.getQuickModel()).toBe(model.id);
+      expect((await user.getChatContext(null)).quickModel?.chatGptPlan?.accountId).toBe("account");
+      await expect(user.getModelConfig(model.id)).rejects.toThrow("hand-added");
+      await expect(user.deleteModel(model.id)).rejects.toThrow("connected account");
     });
   });
 });

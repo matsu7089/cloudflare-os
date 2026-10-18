@@ -11,6 +11,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
 import type { DeviceSessionHandoff } from "../auth/device-session-handoff.js";
+import type { ChatGptSession, PendingChatGptConnect } from "../chatgpt-plan.js";
 
 export type ConnectedAccountRecord = {
   id: number;
@@ -199,6 +200,9 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       }),
     },
     singletons: {
+      chatGptAccounts: <Record<string, ChatGptSession>>{},
+      chatGptHostId: "",
+      pendingChatGptConnect: <PendingChatGptConnect | null>null,
       // AI Gateway billing state (selected account + cached balance) for the optional top-up flow;
       // null until a Cloudflare account is connected and resolved.
       cloudflareBilling: <CloudflareBilling | null>null,

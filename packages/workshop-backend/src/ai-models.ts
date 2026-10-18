@@ -1,4 +1,4 @@
-import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, exports as workerExports } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type {
   AnthropicMessagesCompat, Api, AssistantMessageEventStream, ClassifierApi, ClassifierContext,
@@ -37,6 +37,7 @@ import {
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
+import { chatGptFetch } from "./chatgpt-inference.js";
 import { hasGpt56PromptCaching, splitSystemPrompt } from "./system-prompt-blocks.js";
 
  /**
@@ -445,6 +446,7 @@ function getHeader(headers: Record<string, string>, name: string): string | unde
 
 type HandleArgs = {
   model: Model<Api>;
+  chatGptPlan?: AiModelConfig["chatGptPlan"];
   // Provider auth: a plain API key (pi turns it into the SDK's native auth) and/or headers.
   // A null header value suppresses a default header ({Authorization: null, "x-api-key": null}
   // alongside cf-aig-authorization makes pi skip SDK auth entirely).
@@ -513,6 +515,11 @@ function makeHandle(args: HandleArgs): ModelHandle {
                 : {}),
         ...(args.fetch !== undefined ? { fetch: args.fetch } : {}),
         ...options,
+        ...(args.chatGptPlan ? { fetch: chatGptFetch(async () => {
+          const ref = args.chatGptPlan!;
+          const users = workerExports.UserDurableObject;
+          return users.get(users.idFromString(ref.userId)).getChatGptAccessToken(ref.accountId);
+        }, options.fetch) } : {}),
         ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
         // Session affinity: pi only sends it when caching isn't "none" (fine for us).
@@ -599,6 +606,11 @@ function signGeminiFunctionCalls(model: Model<Api>, payload: unknown): object | 
 export function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
                          options: ModelRoutingOptions = {}): ModelHandle {
+  // A ChatGPT grant is billed by OpenAI, even on deployments with a platform or user gateway.
+  if (config.chatGptPlan) {
+    if (config.provider !== "openai") throw new Error("ChatGPT requires the OpenAI provider.");
+    return getModelDirect(config, options.sessionAffinity);
+  }
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
   // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
@@ -873,20 +885,23 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
       });
     case "openai":
       return makeHandle({
+        chatGptPlan: config.chatGptPlan,
         model: {
           id: config.model,
           name: catalog?.name ?? config.model,
           api: "openai-responses",
           provider: "openai",
-          baseUrl: config.apiUrl ?? "https://api.openai.com/v1",
+          baseUrl: config.chatGptPlan ? "https://api.openai.com/v1" : config.apiUrl ?? "https://api.openai.com/v1",
           reasoning: catalog?.reasoning ?? true,
           input: catalog?.input ?? ["text", "image"],
-          cost: catalog?.cost ?? ZERO_COST,
+          cost: config.chatGptPlan ? ZERO_COST : catalog?.cost ?? ZERO_COST,
           ...window,
           thinkingLevelMap: catalog?.thinkingLevelMap,
-          compat: catalog?.compat,
+          compat: config.chatGptPlan ? { ...catalog?.compat,
+            supportsAdditionalTools: false, supportsToolSearch: false,
+            supportsMaxOutputTokens: false } : catalog?.compat,
         },
-        ...directAuth(config, "Authorization"),
+        ...(config.chatGptPlan ? { apiKey: "chatgpt" } : directAuth(config, "Authorization")),
         sessionAffinity,
       });
     default:
@@ -974,6 +989,10 @@ export type AiModelGatekeeperProps = {
  */
 async function refuseRevokedModel(env: Cloudflare.Env, props: AiModelGatekeeperProps) {
   let models = await getGatewayModels(env);
+  if (props.config.chatGptPlan) {
+    models?.refuseUserModel(props.displayName);
+    return;
+  }
   if (models?.get(props.config.model)?.provider === props.config.provider) {
     models.refuseDisabled(props.config.model);
   } else {

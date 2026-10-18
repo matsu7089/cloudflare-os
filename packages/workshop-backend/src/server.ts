@@ -21,6 +21,7 @@ import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
 import { blueprintContentKey, buildBlueprintArchiveStream, sanitizeBlueprintOutput, parseBlueprintArchive, randomBlueprintId } from "./blueprint-archive.js";
 import { BlueprintKvRecord, listFeaturedBlueprintsFromKv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
+import { chatGptConnectRequest } from "./chatgpt-plan.js";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
@@ -172,6 +173,18 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
   listModels(kind?: ModelKind): Promise<AiChatAuthorInfo[]> {
     return retryOnDoReset(() => this.#user.listModels(kind));
+  }
+  listChatGptAccounts() {
+    return this.#user.listChatGptAccounts();
+  }
+  beginChatGptConnect(accountId?: string) {
+    return this.#user.beginChatGptConnect(accountId);
+  }
+  refreshChatGptModels(accountId: string) {
+    return this.#user.refreshChatGptModels(accountId);
+  }
+  disconnectChatGptAccount(accountId: string) {
+    return this.#user.disconnectChatGptAccount(accountId);
   }
   addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
            copySecretsFrom?: string): Promise<void> {
@@ -905,6 +918,10 @@ export default {
 
     if (url.pathname === "/api/client-errors") {
       return handleClientErrorRequest(req, env, ctx);
+    }
+
+    if (url.pathname === "/api/chatgpt/connect") {
+      return chatGptConnectRequest(req, ctx.exports.UserDurableObject);
     }
 
     if (url.pathname === "/api/device-session/callback") {
